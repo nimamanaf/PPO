@@ -9,25 +9,24 @@ using PyCall
 
 @pyimport gym
 @pyimport baselines.common.atari_wrappers as aw
-@pyimport baselines.common.vec_env.subproc_vec_env as subvecenv
-@pyimport baselines.common.vec_env.vec_frame_stack as vecfstak
 
 env_id = "SpaceInvaders-v0"
 id = "SpaceInvaders-v0"
 
+id1 = "CartPole-v0"
 
 
 const _gym_spaces = ["Box", "Discrete", "MultiDiscrete", "MultiBinary", "Tuple", "Dict"]
 
-abstract type absSpace end
+@everywhere abstract type absSpace end
 sample(space::absSpace) = error("sample function for $(typeof(space)) is missing")
 
-mutable struct DiscreteS <: absSpace
+@everywhere mutable struct DiscreteS <: absSpace
     n
 end
 sample(s::DiscreteS) = rand(0:(s.n-1))
 
-mutable struct BoxS <: absSpace
+@everywhere mutable struct BoxS <: absSpace
     low
     high
     shape
@@ -48,7 +47,7 @@ function sample(s::BoxS)
     end
 end
 
-mutable struct TupleS <: absSpace
+@everywhere mutable struct TupleS <: absSpace
     spaces
 end
 sample(s::TupleS) = map(sample, s.spaces)
@@ -67,7 +66,7 @@ function julia_space(ps)
     end
 end
 
-struct Spec
+@everywhere struct Spec
     id
     trials
     reward_threshold
@@ -77,7 +76,7 @@ struct Spec
     timestep_limit
 end
 
-mutable struct GymEnv
+@everywhere mutable struct GymEnv
     name
     spec
     action_space
@@ -98,13 +97,17 @@ function make_env(env_id, rank, seed)
     env = make_atari(env_id)
     env[:seed](seed+rank)
     env = aw.wrap_deepmind(env, episode_life=false, clip_rewards=false)
+    env = aw.FrameStack(env, 4)
     return env
 end
 
-gymenv = make_env(id, 1, 0)
-function GymEnv(id::String, make_env)
+
+#gymenv = make_env(id, 1, 0)
+@everywhere function GymEnv(id::String, make_env; env_seed=1)
     try
-        gymenv = make_env(id, 1, 0)
+
+        gymenv = make_env(id, env_seed, 0)
+        gymenv[:seed](env_seed)
         #gymenv = gym[:make](id)
         spec = Spec(gymenv[:spec][:id],
                     gymenv[:spec][:trials],
@@ -125,32 +128,37 @@ function GymEnv(id::String, make_env)
     end
 end
 
-reset!(env::GymEnv) = env.gymenv[:reset]()
+@everywhere reset!(env::PyCall.PyObject) = env.gymenv[:reset]()[:__array__]("float32")
+@everywhere reset!(env::GymEnv) = env.gymenv[:reset]()[:__array__]("float32")
+
+
+reset!(env::GymEnv) = env.gymenv[:reset]()[:__array__]("float32")
+
+
 function render(env::GymEnv; mode="human")
     env.gymenv[:render](mode)
 end
 
-function step!(env::GymEnv, action)
+@everywhere function step!(env::PyCall.PyObject, action)
     ob, reward, done, information = env.gymenv[:step](action)
-    return ob, reward, done, information
+    return ob[:__array__]("float32"), reward, done, information
+end
+@everywhere function step!(env::GymEnv, action)
+    ob, reward, done, information = env.gymenv[:step](action)
+    return ob[:__array__]("float32"), reward, done, information
 end
 
-close!(env::GymEnv) = env.gymenv[:close]()
+@everywhere close!(env::PyCall.PyObject) = env.gymenv[:close]()
 
-seed!(env::GymEnv, seed=nothing) = env.gymenv[:seed](seed)
+@everywhere seed!(env::PyCall.PyObject, seed=nothing) = env.gymenv[:seed](seed)
 
+#env1 = GymEnv(id1)
 
-
-env_fns = Any[]
-for rank in 1:num_actors
-    push!(env_fns, make_env(env_id, rank, seed))
+#env = GymEnv(id, make_env)
+function make_venv(num_actors, id)
+    venv = Any[]
+    for i in 1:num_actors
+        push!(venv, GymEnv(id::String, make_env, env_seed=i))
+    end
+    return venv
 end
-venv =  subvecenv.SubprocVecEnv(env_fns) # Not rernder able
-venv = vecfstak.VecFrameStack(venv, 4)
-
-test_env = make_env(env_id, 0, seed)
-test_env = aw.FrameStack(test_env, 4)
-
-jvenv = map(GymEnv(id, make_env), venv)
-
-env = GymEnv(id, make_env)
